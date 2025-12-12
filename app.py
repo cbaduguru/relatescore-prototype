@@ -14,6 +14,7 @@ MISSION = "RelateScore™ provides private relational clarity that supports grow
 DATA_DIR = ".data"
 INVITES_PATH = os.path.join(DATA_DIR, "invites.json")
 
+
 # -----------------------------
 # Storage helpers (JSON file)
 # -----------------------------
@@ -41,28 +42,40 @@ def _save_store(store: Dict[str, Any]) -> None:
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
+
 # -----------------------------
 # Invite & user identity
 # -----------------------------
 def _rand_code(n: int = 6) -> str:
     alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
     import secrets
+
     return "".join(secrets.choice(alphabet) for _ in range(n))
 
 
 def get_or_create_user_id() -> str:
     if "user_id" not in st.session_state:
         import secrets
+
         st.session_state.user_id = secrets.token_hex(8)
     return st.session_state.user_id
+
 
 # -----------------------------
 # Safety / Toxicity filter (simple heuristic)
 # NOTE: Prototype only — replace with robust moderation in production.
 # -----------------------------
 BANNED_PATTERNS = [
-    r"\bkill\b", r"\bdie\b", r"\bworthless\b", r"\bhate you\b", r"\bshut up\b",
-    r"\bstupid\b", r"\bidiot\b", r"\bslut\b", r"\bbitch\b", r"\basshole\b"
+    r"\bkill\b",
+    r"\bdie\b",
+    r"\bworthless\b",
+    r"\bhate you\b",
+    r"\bshut up\b",
+    r"\bstupid\b",
+    r"\bidiot\b",
+    r"\bslut\b",
+    r"\bbitch\b",
+    r"\basshole\b",
 ]
 
 
@@ -79,13 +92,14 @@ def enforce_toxicity_gate(texts: List[str], threshold: float = 0.55) -> Tuple[bo
     score = max(toxicity_score(t) for t in texts)
     return (score <= threshold), score
 
+
 # -----------------------------
 # Scoring logic (prototype)
 # Now: RGI = Relationship Growth Index (0–100)
 # - Normalize text to 0–100
-# - Apply category weights (communication 35%, empathy 20%, etc.)
-# - Outlier dampening: trimmed mean/median blend
-# - Time weighting: EMA alpha 0.3–0.8 across multiple reflections
+# - Apply category weights
+# - Outlier dampening
+# - Time weighting: EMA
 # -----------------------------
 CATEGORIES = ["Communication", "Empathy", "Reliability", "Conflict Navigation", "Connection"]
 
@@ -100,7 +114,7 @@ DEFAULT_WEIGHTS = {
 PROMPTS = [
     "In the past week, what did your partner do that helped you feel supported?",
     "What is one moment you felt misunderstood, and what did you need instead?",
-    "What is one small change you can make next week to improve the relationship?"
+    "What is one small change you can make next week to improve the relationship?",
 ]
 
 EMPATHY_POS = ["understand", "heard", "care", "empath", "support", "validate", "compassion"]
@@ -121,13 +135,15 @@ def _len_score(text: str) -> float:
     return min(1.0, n / 500.0)
 
 
-def score_categories(effort_1_5: int, answers: List[str], attachment_flags: Dict[str, bool]) -> Dict[str, float]:
+def score_categories(
+    effort_1_5: int, answers: List[str], attachment_flags: Dict[str, bool]
+) -> Dict[str, float]:
     joined = " ".join(answers or [])
     effort = np.clip((effort_1_5 - 1) / 4, 0, 1)  # 0..1
 
     comm = 0.35 * _len_score(joined) + 0.35 * np.tanh(_keyword_score(joined, COMM_POS) / 3) + 0.30 * effort
-    emp  = 0.35 * _len_score(joined) + 0.35 * np.tanh(_keyword_score(joined, EMPATHY_POS) / 3) + 0.30 * effort
-    rel  = 0.25 * _len_score(joined) + 0.45 * np.tanh(_keyword_score(joined, REL_POS) / 3) + 0.30 * effort
+    emp = 0.35 * _len_score(joined) + 0.35 * np.tanh(_keyword_score(joined, EMPATHY_POS) / 3) + 0.30 * effort
+    rel = 0.25 * _len_score(joined) + 0.45 * np.tanh(_keyword_score(joined, REL_POS) / 3) + 0.30 * effort
     conn = 0.25 * _len_score(joined) + 0.45 * np.tanh(_keyword_score(joined, CONN_POS) / 3) + 0.30 * effort
 
     conflict_pos = np.tanh(_keyword_score(joined, CONFLICT_SKILL) / 3)
@@ -136,7 +152,11 @@ def score_categories(effort_1_5: int, answers: List[str], attachment_flags: Dict
 
     # Attachment modifiers (small)
     if attachment_flags.get("secure"):
-        comm += 0.04; emp += 0.04; rel += 0.04; conn += 0.04; conflict += 0.04
+        comm += 0.04
+        emp += 0.04
+        rel += 0.04
+        conn += 0.04
+        conflict += 0.04
     if attachment_flags.get("anxious"):
         conflict -= 0.04
     if attachment_flags.get("avoidant"):
@@ -165,7 +185,7 @@ def trimmed_mean(values: List[float], trim: float = 0.1) -> float:
         return float(v.mean())
     k = int(len(v) * trim)
     v_sorted = np.sort(v)
-    v_trim = v_sorted[k:len(v_sorted) - k] if (len(v_sorted) - 2 * k) > 0 else v_sorted
+    v_trim = v_sorted[k : len(v_sorted) - k] if (len(v_sorted) - 2 * k) > 0 else v_sorted
     return float(v_trim.mean())
 
 
@@ -192,7 +212,7 @@ def ema(values: List[float], alpha: float) -> float:
 
 def compute_dashboard(reflections: List[Dict[str, Any]], ema_alpha: float) -> Dict[str, Any]:
     """Aggregates for RGI and category scores with outlier dampening + EMA across time.
-       Backward compatible: will read r['rgi'] else r['rsq'].
+    Backward compatible: reads r['rgi'] else r['rsq'].
     """
     if not reflections:
         return {
@@ -200,7 +220,7 @@ def compute_dashboard(reflections: List[Dict[str, Any]], ema_alpha: float) -> Di
             "rgi_trend": 0.0,
             "category_point": {c: 0.0 for c in CATEGORIES},
             "category_trend": {c: 0.0 for c in CATEGORIES},
-            "n_reflections": 0
+            "n_reflections": 0,
         }
 
     refl = sorted(reflections, key=lambda r: r.get("ts", ""))
@@ -219,8 +239,9 @@ def compute_dashboard(reflections: List[Dict[str, Any]], ema_alpha: float) -> Di
         "rgi_trend": rgi_trend,
         "category_point": category_point,
         "category_trend": category_trend,
-        "n_reflections": len(reflections)
+        "n_reflections": len(reflections),
     }
+
 
 # -----------------------------
 # UI / Branding
@@ -242,47 +263,7 @@ def inject_branding():
         .rs-title{font-size:28px; font-weight:700; color:var(--rs-primary); margin-bottom:6px;}
         .rs-sub{color:var(--rs-muted); margin-top:0px; margin-bottom:0px;}
         .rs-card{background:white; padding:16px; border-radius:18px; border:1px solid var(--rs-border);}
-        .rs-small{color:var(--rs-muted); font-size:13px;}
         .rs-footer{color:var(--rs-muted); font-size:12px; padding-top:20px;}
-
-        /* RGI circle hero */
-        .rgi-wrap{
-          display:flex;
-          justify-content:flex-start;
-          align-items:center;
-          gap:18px;
-          margin: 8px 0 6px 0;
-        }
-        .rgi-circle{
-          width: 220px;
-          height: 220px;
-          border-radius: 999px;
-          border: 10px solid var(--rs-accent);
-          display:flex;
-          flex-direction:column;
-          justify-content:center;
-          align-items:center;
-          background: #FFFFFF;
-        }
-        .rgi-label{
-          font-size: 30px;
-          font-weight: 800;
-          color: var(--rs-accent);
-          line-height: 1.0;
-          letter-spacing: 1px;
-        }
-        .rgi-value{
-          font-size: 72px;
-          font-weight: 900;
-          color: var(--rs-text);
-          line-height: 1.0;
-          margin-top: 6px;
-        }
-        .rgi-name{
-          margin-top: 8px;
-          font-size: 14px;
-          color: var(--rs-muted);
-        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -292,8 +273,64 @@ def inject_branding():
 def footer():
     st.markdown(
         f"<div class='rs-footer'>{MISSION}<br/>Prototype for demonstration only — no clinical, legal, or safety guarantees.</div>",
-        unsafe_allow_html=True
+        unsafe_allow_html=True,
     )
+
+
+# -----------------------------
+# RGI progress ring (SVG)
+# -----------------------------
+def render_rgi_progress_ring(rgi_value: float) -> str:
+    """SVG progress ring (0–100) with 'RGI' + big numeric value centered."""
+    v = float(np.clip(rgi_value, 0, 100))
+
+    size = 240
+    stroke = 18
+    r = (size - stroke) / 2
+    cx = cy = size / 2
+    circumference = 2 * np.pi * r
+    progress = (v / 100.0) * circumference
+
+    return f"""
+    <div style="display:flex; justify-content:center; align-items:center;">
+      <div style="width:{size}px; height:{size}px; position:relative;">
+        <svg width="{size}" height="{size}" viewBox="0 0 {size} {size}">
+          <circle
+            cx="{cx}" cy="{cy}" r="{r}"
+            fill="white"
+            stroke="rgba(59,130,246,0.20)"
+            stroke-width="{stroke}"
+          />
+          <circle
+            cx="{cx}" cy="{cy}" r="{r}"
+            fill="none"
+            stroke="#3B82F6"
+            stroke-width="{stroke}"
+            stroke-linecap="round"
+            stroke-dasharray="{progress:.2f} {circumference:.2f}"
+            transform="rotate(-90 {cx} {cy})"
+          />
+        </svg>
+
+        <div style="
+          position:absolute; inset:0;
+          display:flex; flex-direction:column;
+          justify-content:center; align-items:center;
+          font-family: sans-serif;">
+          <div style="font-size:30px; font-weight:800; color:#3B82F6; letter-spacing:1px; line-height:1;">
+            RGI
+          </div>
+          <div style="font-size:72px; font-weight:900; color:#0F172A; line-height:1; margin-top:6px;">
+            {v:0.0f}
+          </div>
+          <div style="margin-top:8px; font-size:14px; color:#475569;">
+            Relationship Growth Index
+          </div>
+        </div>
+      </div>
+    </div>
+    """
+
 
 # -----------------------------
 # App views
@@ -303,7 +340,10 @@ def view_home(store: Dict[str, Any]):
     col1, col2 = st.columns([0.75, 0.25], vertical_alignment="center")
     with col1:
         st.markdown(f"<div class='rs-title'>{APP_NAME}</div>", unsafe_allow_html=True)
-        st.markdown("<p class='rs-sub'>Private, structured reflection with a lightweight scorecard. No raw text is shared by default.</p>", unsafe_allow_html=True)
+        st.markdown(
+            "<p class='rs-sub'>Private, structured reflection with a lightweight scorecard. No raw text is shared by default.</p>",
+            unsafe_allow_html=True,
+        )
     with col2:
         st.markdown("<div class='rs-card'>", unsafe_allow_html=True)
         st.markdown("**Logo slot**")
@@ -367,7 +407,7 @@ def view_consent(store: Dict[str, Any], code: str):
     st.markdown(f"<div class='rs-title'>Thread: {code}</div>", unsafe_allow_html=True)
     st.markdown(
         f"<p class='rs-sub'>Initiator: <b>{inv.get('initiator_name')}</b> • Partner: <b>{inv.get('partner_name')}</b></p>",
-        unsafe_allow_html=True
+        unsafe_allow_html=True,
     )
 
     user_id = get_or_create_user_id()
@@ -424,7 +464,10 @@ def view_reflection(store: Dict[str, Any], code: str):
 
     st.markdown("<div class='rs-shell'>", unsafe_allow_html=True)
     st.markdown("<div class='rs-title'>Reflection</div>", unsafe_allow_html=True)
-    st.markdown("<p class='rs-sub'>Guided prompts + quick self-rating. A toxicity gate blocks harmful language.</p>", unsafe_allow_html=True)
+    st.markdown(
+        "<p class='rs-sub'>Guided prompts + quick self-rating. A toxicity gate blocks harmful language.</p>",
+        unsafe_allow_html=True,
+    )
 
     st.divider()
     left, right = st.columns([0.62, 0.38], gap="large")
@@ -451,7 +494,9 @@ def view_reflection(store: Dict[str, Any], code: str):
 
         toxicity_ok, tox_score = enforce_toxicity_gate([*answers], threshold=0.55)
         if not toxicity_ok:
-            st.error(f"Input blocked by the toxicity gate (score {tox_score:.2f} > threshold). Please revise and resubmit.")
+            st.error(
+                f"Input blocked by the toxicity gate (score {tox_score:.2f} > threshold). Please revise and resubmit."
+            )
             if st.button("Acknowledge & return to input"):
                 inv["toxicity_events"] = int(inv.get("toxicity_events", 0)) + 1
                 store["invites"][code] = inv
@@ -461,15 +506,17 @@ def view_reflection(store: Dict[str, Any], code: str):
                 cat_scores = score_categories(effort, answers, attachments)
                 rgi = rgi_from_categories(cat_scores, DEFAULT_WEIGHTS)
 
-                inv["reflections"].append({
-                    "ts": _now_iso(),
-                    "user_id": user_id,
-                    "effort": int(effort),
-                    "answers": answers,  # stored for your own history; not shared by default in UI
-                    "attachments": attachments,
-                    "categories": cat_scores,
-                    "rgi": rgi,  # NEW key
-                })
+                inv["reflections"].append(
+                    {
+                        "ts": _now_iso(),
+                        "user_id": user_id,
+                        "effort": int(effort),
+                        "answers": answers,  # stored for your own history; not shared by default in UI
+                        "attachments": attachments,
+                        "categories": cat_scores,
+                        "rgi": rgi,  # NEW key
+                    }
+                )
                 store["invites"][code] = inv
                 _save_store(store)
                 st.success("Reflection saved.")
@@ -479,10 +526,16 @@ def view_reflection(store: Dict[str, Any], code: str):
     with right:
         st.markdown("<div class='rs-card'>", unsafe_allow_html=True)
         st.subheader("Weights & time curve")
-        st.caption("Prototype weights: Communication 35%, Empathy 20%, Reliability 20%, Conflict 15%, Connection 10%.")
+        st.caption(
+            "Prototype weights: Communication 35%, Empathy 20%, Reliability 20%, Conflict 15%, Connection 10%."
+        )
         ema_alpha = st.slider(
-            "Time-weighting alpha (EMA)", 0.30, 0.80, 0.50, 0.05,
-            help="Higher = recent reflections influence more."
+            "Time-weighting alpha (EMA)",
+            0.30,
+            0.80,
+            0.50,
+            0.05,
+            help="Higher = recent reflections influence more.",
         )
         st.session_state["ema_alpha"] = ema_alpha
         st.divider()
@@ -511,7 +564,7 @@ def view_dashboard(store: Dict[str, Any], code: str):
     refl = inv.get("reflections", [])
     dashboard = compute_dashboard(refl, ema_alpha)
 
-    # Mutual weighting check (if both parties reflected in last 7 days, apply a 1.10 multiplier)
+    # Mutual bonus: if both parties reflected in last 7 days
     recent = sorted(refl, key=lambda r: r.get("ts", ""))[-10:]
     week_ago = datetime.now(timezone.utc).timestamp() - 7 * 86400
     users_recent = set()
@@ -529,37 +582,30 @@ def view_dashboard(store: Dict[str, Any], code: str):
 
     st.markdown("<div class='rs-shell'>", unsafe_allow_html=True)
     st.markdown("<div class='rs-title'>Private Output</div>", unsafe_allow_html=True)
-    st.markdown("<p class='rs-sub'>RGI score (Relationship Growth Index), insights, and a lightweight red-flag dashboard.</p>", unsafe_allow_html=True)
+    st.markdown(
+        "<p class='rs-sub'>RGI (Relationship Growth Index), insights, and a lightweight red-flag dashboard.</p>",
+        unsafe_allow_html=True,
+    )
     st.divider()
 
-    # HERO RGI circle
-    st.markdown(
-        f"""
-        <div class="rgi-wrap">
-          <div class="rgi-circle">
-            <div class="rgi-label">RGI</div>
-            <div class="rgi-value">{rgi_point:0.0f}</div>
-            <div class="rgi-name">Relationship Growth Index</div>
-          </div>
-          <div>
-            <div style="font-size:16px; font-weight:700; color:var(--rs-primary); margin-bottom:6px;">
-              What this means
-            </div>
-            <div style="color:var(--rs-muted); font-size:14px; line-height:1.5;">
-              RGI is a private, time-weighted growth signal (0–100) based on structured reflection.
-              It is non-diagnostic and designed to support clarity without judgment or exposure.
-            </div>
-            <div style="margin-top:10px;">
-              <span style="color:var(--rs-muted); font-size:13px;">EMA trend:</span>
-              <span style="font-weight:800; color:var(--rs-text); font-size:16px;"> {rgi_trend:0.1f}</span>
-              <span style="color:var(--rs-muted); font-size:13px;"> • Reflections:</span>
-              <span style="font-weight:800; color:var(--rs-text); font-size:16px;"> {dashboard['n_reflections']}</span>
-            </div>
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
+    # TWO-COLUMN HERO (ring + explanation)
+    hero_left, hero_right = st.columns([0.40, 0.60], gap="large", vertical_alignment="center")
+
+    with hero_left:
+        st.markdown(render_rgi_progress_ring(rgi_point), unsafe_allow_html=True)
+
+    with hero_right:
+        st.markdown("<div class='rs-card'>", unsafe_allow_html=True)
+        st.subheader("What this means")
+        st.write(
+            "RGI is a private, time-weighted growth signal (0–100) based on structured reflection. "
+            "It is non-diagnostic and designed to support clarity without judgment or exposure."
+        )
+        m1, m2, m3 = st.columns(3)
+        m1.metric("EMA trend", f"{rgi_trend:0.1f}")
+        m2.metric("Reflections", f"{dashboard['n_reflections']}")
+        m3.metric("Mutual bonus", f"{mutual_bonus:0.2f}x")
+        st.markdown("</div>", unsafe_allow_html=True)
 
     st.divider()
 
@@ -568,14 +614,19 @@ def view_dashboard(store: Dict[str, Any], code: str):
     with left:
         st.markdown("<div class='rs-card'>", unsafe_allow_html=True)
         st.subheader("Category scorecard (0–100)")
-        df = pd.DataFrame({
-            "Category": CATEGORIES,
-            "Point": [dashboard["category_point"][c] for c in CATEGORIES],
-            "Trend": [dashboard["category_trend"][c] for c in CATEGORIES],
-            "Weight": [DEFAULT_WEIGHTS[c] for c in CATEGORIES],
-        })
+        df = pd.DataFrame(
+            {
+                "Category": CATEGORIES,
+                "Point": [dashboard["category_point"][c] for c in CATEGORIES],
+                "Trend": [dashboard["category_trend"][c] for c in CATEGORIES],
+                "Weight": [DEFAULT_WEIGHTS[c] for c in CATEGORIES],
+            }
+        )
         st.dataframe(df, use_container_width=True, hide_index=True)
-        st.caption("Scores are indicative signals from text length + keyword heuristics + self-rated effort. Replace with calibrated model later.")
+        st.caption(
+            "Scores are indicative signals from text length + keyword heuristics + self-rated effort. "
+            "Replace with calibrated model later."
+        )
         st.markdown("</div>", unsafe_allow_html=True)
 
         st.markdown("<div class='rs-card' style='margin-top:14px;'>", unsafe_allow_html=True)
@@ -612,7 +663,9 @@ def view_dashboard(store: Dict[str, Any], code: str):
         st.write(f"• Low empathy signals (last 5): **{low_empathy}**")
 
         if tox_events >= 1 or low_conflict_skill >= 3:
-            st.warning("This thread shows elevated friction signals. Consider pausing and using calmer, specific language.")
+            st.warning(
+                "This thread shows elevated friction signals. Consider pausing and using calmer, specific language."
+            )
         else:
             st.success("No elevated red-flag signals detected in the latest window (prototype heuristic).")
 
@@ -635,12 +688,17 @@ def view_dashboard(store: Dict[str, Any], code: str):
     st.caption("Shows only reflections created from this browser session (matched by your user_id).")
     mine = [r for r in refl if r.get("user_id") == user_id]
     if mine:
-        hist = pd.DataFrame([{
-            "Timestamp (UTC)": r.get("ts", ""),
-            "Effort": r.get("effort"),
-            "RGI": round(float(r.get("rgi", r.get("rsq", 0.0))), 1),
-            **{c: round(float(r.get("categories", {}).get(c, 0.0)), 1) for c in CATEGORIES}
-        } for r in sorted(mine, key=lambda r: r.get("ts", ""), reverse=True)])
+        hist = pd.DataFrame(
+            [
+                {
+                    "Timestamp (UTC)": r.get("ts", ""),
+                    "Effort": r.get("effort"),
+                    "RGI": round(float(r.get("rgi", r.get("rsq", 0.0))), 1),
+                    **{c: round(float(r.get("categories", {}).get(c, 0.0)), 1) for c in CATEGORIES},
+                }
+                for r in sorted(mine, key=lambda r: r.get("ts", ""), reverse=True)
+            ]
+        )
         st.dataframe(hist, use_container_width=True, hide_index=True)
     else:
         st.info("No reflections from this session yet.")
@@ -648,6 +706,7 @@ def view_dashboard(store: Dict[str, Any], code: str):
 
     st.markdown("</div>", unsafe_allow_html=True)
     footer()
+
 
 # -----------------------------
 # Router
@@ -681,6 +740,7 @@ def main():
         view_dashboard(store, code)
     else:
         view_home(store)
+
 
 if __name__ == "__main__":
     main()
