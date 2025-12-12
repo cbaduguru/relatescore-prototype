@@ -7,6 +7,7 @@ from typing import Dict, Any, List, Tuple
 import numpy as np
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components  # <-- NEW
 
 APP_NAME = "RelateScore™ Prototype"
 MISSION = "RelateScore™ provides private relational clarity that supports growth without judgment or exposure."
@@ -132,7 +133,6 @@ def score_categories(effort_1_5: int, answers: List[str], attachment_flags: Dict
     conflict_neg = np.tanh(_keyword_score(joined, CONFLICT_NEG) / 3)
     conflict = 0.35 * _len_score(joined) + 0.35 * conflict_pos + 0.30 * effort - 0.25 * conflict_neg
 
-    # Small modifiers
     if attachment_flags.get("secure"):
         comm += 0.04; emp += 0.04; rel += 0.04; conn += 0.04; conflict += 0.04
     if attachment_flags.get("anxious"):
@@ -155,27 +155,16 @@ def rgi_from_categories(cat_scores: Dict[str, float], weights: Dict[str, float])
     return float(sum(cat_scores[c] * weights.get(c, 0) for c in CATEGORIES))
 
 
-def trimmed_mean(values: List[float], trim: float = 0.1) -> float:
+def dampened_aggregate(values: List[float]) -> float:
     if not values:
         return 0.0
     v = np.array(values, dtype=float)
     if len(v) < 5:
         return float(v.mean())
-    k = int(len(v) * trim)
     v_sorted = np.sort(v)
+    k = int(len(v_sorted) * 0.1)
     v_trim = v_sorted[k:len(v_sorted) - k] if (len(v_sorted) - 2 * k) > 0 else v_sorted
-    return float(v_trim.mean())
-
-
-def median_blend(values: List[float]) -> float:
-    if not values:
-        return 0.0
-    v = np.array(values, dtype=float)
-    return float(0.6 * np.median(v) + 0.4 * np.mean(v))
-
-
-def dampened_aggregate(values: List[float]) -> float:
-    return float(0.5 * trimmed_mean(values, 0.1) + 0.5 * median_blend(values))
+    return float(0.5 * v_trim.mean() + 0.5 * (0.6 * np.median(v) + 0.4 * v.mean()))
 
 
 def ema(values: List[float], alpha: float) -> float:
@@ -228,43 +217,24 @@ def inject_branding():
         <style>
         :root{
           --rs-primary:#2C2A4A;
-          --rs-accent:#3B82F6;
           --rs-soft:#F4F6FB;
-          --rs-text:#0F172A;
           --rs-muted:#475569;
           --rs-border:#E2E8F0;
-
-          --ring-bg: rgba(59,130,246,0.20);
-          --ring-text: #0F172A;
-          --ring-subtext: #475569;
-          --ring-card: #FFFFFF;
+          --rs-card:#FFFFFF;
         }
-
         @media (prefers-color-scheme: dark){
           :root{
             --rs-soft:#0B1220;
-            --rs-text:#E5E7EB;
             --rs-muted:#9CA3AF;
             --rs-border:#1F2937;
-
-            --ring-bg: rgba(59,130,246,0.25);
-            --ring-text: #E5E7EB;
-            --ring-subtext: #9CA3AF;
-            --ring-card: #0F172A;
+            --rs-card:#0F172A;
           }
         }
-
         .rs-shell{background:var(--rs-soft); padding:18px 18px 6px 18px; border-radius:18px; border:1px solid var(--rs-border);}
         .rs-title{font-size:28px; font-weight:700; color:var(--rs-primary); margin-bottom:6px;}
         .rs-sub{color:var(--rs-muted); margin-top:0px; margin-bottom:0px;}
-        .rs-card{background:var(--ring-card); padding:16px; border-radius:18px; border:1px solid var(--rs-border);}
+        .rs-card{background:var(--rs-card); padding:16px; border-radius:18px; border:1px solid var(--rs-border);}
         .rs-footer{color:var(--rs-muted); font-size:12px; padding-top:20px;}
-
-        @keyframes rsRingFill {
-          from { stroke-dashoffset: var(--dashoffset-from); }
-          to   { stroke-dashoffset: var(--dashoffset-to); }
-        }
-        .rs-ring-anim { animation: rsRingFill 1.15s ease-out forwards; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -279,7 +249,7 @@ def footer():
 
 
 # -----------------------------
-# Ring: color interpolation + animated SVG + tooltip
+# Ring (self-contained HTML for components.html)
 # -----------------------------
 def _interp_hex(c1: str, c2: str, t: float) -> str:
     t = float(np.clip(t, 0, 1))
@@ -293,11 +263,10 @@ def _interp_hex(c1: str, c2: str, t: float) -> str:
 
 
 def rgi_color_growth_band(v: float) -> str:
-    """Non-judgmental palette: slate -> blue -> indigo."""
     v = float(np.clip(v, 0, 100))
-    low  = ("#64748B", 0)    # slate
-    mid  = ("#3B82F6", 55)   # blue
-    high = ("#6366F1", 100)  # indigo
+    low  = ("#64748B", 0)
+    mid  = ("#3B82F6", 55)
+    high = ("#6366F1", 100)
     if v <= mid[1]:
         t = (v - low[1]) / (mid[1] - low[1] + 1e-9)
         return _interp_hex(low[0], mid[0], t)
@@ -305,22 +274,16 @@ def rgi_color_growth_band(v: float) -> str:
     return _interp_hex(mid[0], high[0], t)
 
 
-def render_rgi_progress_ring(rgi_value: float) -> str:
-    """
-    IMPORTANT: This returns HTML+SVG.
-    It MUST be rendered via:
-      st.markdown(render_rgi_progress_ring(...), unsafe_allow_html=True)
-    """
+def ring_html(rgi_value: float) -> str:
     v = float(np.clip(rgi_value, 0, 100))
     size = 240
     stroke = 18
     radius = (size - stroke) / 2
     cx = cy = size / 2
-
     circumference = 2 * np.pi * radius
     progress = (v / 100.0) * circumference
-    dashoffset_from = circumference
-    dashoffset_to = max(0.0, circumference - progress)
+    dash_from = circumference
+    dash_to = max(0.0, circumference - progress)
 
     ring_color = rgi_color_growth_band(v)
     tooltip = (
@@ -329,40 +292,96 @@ def render_rgi_progress_ring(rgi_value: float) -> str:
     )
 
     return f"""
-<div style="display:flex; justify-content:center; align-items:center;">
-  <div style="position:relative; width:{size}px; height:{size}px;">
-    <svg width="{size}" height="{size}" viewBox="0 0 {size} {size}" style="position:absolute; top:0; left:0;">
-      <title>{tooltip}</title>
-
-      <circle cx="{cx}" cy="{cy}" r="{radius}" fill="none" stroke="var(--ring-bg)" stroke-width="{stroke}"/>
-
-      <circle
-        cx="{cx}" cy="{cy}" r="{radius}"
-        fill="none"
-        stroke="{ring_color}"
-        stroke-width="{stroke}"
-        stroke-linecap="round"
-        stroke-dasharray="{circumference:.2f}"
-        stroke-dashoffset="{dashoffset_from:.2f}"
-        transform="rotate(-90 {cx} {cy})"
-        class="rs-ring-anim"
-        style="--dashoffset-from:{dashoffset_from:.2f}; --dashoffset-to:{dashoffset_to:.2f};"
-      />
-    </svg>
-
-    <div style="
-      position:absolute; inset:0;
-      display:flex; flex-direction:column;
-      align-items:center; justify-content:center;
-      z-index:2; pointer-events:none;
-      font-family:sans-serif; text-align:center;
-    ">
-      <div style="font-size:30px; font-weight:800; color:{ring_color}; line-height:1;">RGI</div>
-      <div style="font-size:72px; font-weight:900; color:var(--ring-text); line-height:1; margin-top:6px;">{int(v)}</div>
-      <div style="font-size:14px; color:var(--ring-subtext); margin-top:6px;">Relationship Growth Index</div>
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      :root {{
+        --bg-ring: rgba(59,130,246,0.20);
+        --text: #0F172A;
+        --subtext: #475569;
+      }}
+      @media (prefers-color-scheme: dark) {{
+        :root {{
+          --bg-ring: rgba(59,130,246,0.25);
+          --text: #E5E7EB;
+          --subtext: #9CA3AF;
+        }}
+      }}
+      body {{
+        margin: 0;
+        padding: 0;
+        background: transparent;
+        font-family: sans-serif;
+      }}
+      .wrap {{
+        width: {size}px;
+        height: {size}px;
+        position: relative;
+        margin: 0 auto;
+      }}
+      @keyframes fill {{
+        from {{ stroke-dashoffset: {dash_from:.2f}; }}
+        to   {{ stroke-dashoffset: {dash_to:.2f}; }}
+      }}
+      .anim {{
+        animation: fill 1.15s ease-out forwards;
+      }}
+      .center {{
+        position:absolute;
+        inset:0;
+        display:flex;
+        flex-direction:column;
+        align-items:center;
+        justify-content:center;
+        pointer-events:none;
+        text-align:center;
+      }}
+      .label {{
+        font-size: 30px;
+        font-weight: 800;
+        color: {ring_color};
+        line-height: 1;
+      }}
+      .value {{
+        font-size: 72px;
+        font-weight: 900;
+        color: var(--text);
+        line-height: 1;
+        margin-top: 6px;
+      }}
+      .sub {{
+        font-size: 14px;
+        color: var(--subtext);
+        margin-top: 6px;
+      }}
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <svg width="{size}" height="{size}" viewBox="0 0 {size} {size}" style="position:absolute;top:0;left:0;">
+        <title>{tooltip}</title>
+        <circle cx="{cx}" cy="{cy}" r="{radius}" fill="none" stroke="var(--bg-ring)" stroke-width="{stroke}"/>
+        <circle cx="{cx}" cy="{cy}" r="{radius}"
+          fill="none"
+          stroke="{ring_color}"
+          stroke-width="{stroke}"
+          stroke-linecap="round"
+          stroke-dasharray="{circumference:.2f}"
+          stroke-dashoffset="{dash_from:.2f}"
+          transform="rotate(-90 {cx} {cy})"
+          class="anim"
+        />
+      </svg>
+      <div class="center">
+        <div class="label">RGI</div>
+        <div class="value">{int(v)}</div>
+        <div class="sub">Relationship Growth Index</div>
+      </div>
     </div>
-  </div>
-</div>
+  </body>
+</html>
 """
 
 
@@ -371,14 +390,10 @@ def render_rgi_progress_ring(rgi_value: float) -> str:
 # -----------------------------
 def view_home(store: Dict[str, Any]):
     st.markdown("<div class='rs-shell'>", unsafe_allow_html=True)
-
     col1, col2 = st.columns([0.75, 0.25], vertical_alignment="center")
     with col1:
         st.markdown(f"<div class='rs-title'>{APP_NAME}</div>", unsafe_allow_html=True)
-        st.markdown(
-            "<p class='rs-sub'>Private, structured reflection with a lightweight scorecard. No raw text is shared by default.</p>",
-            unsafe_allow_html=True,
-        )
+        st.markdown("<p class='rs-sub'>Private, structured reflection with a lightweight scorecard.</p>", unsafe_allow_html=True)
     with col2:
         st.markdown("<div class='rs-card'>", unsafe_allow_html=True)
         st.markdown("**Logo slot**")
@@ -439,18 +454,12 @@ def view_consent(store: Dict[str, Any], code: str):
 
     st.markdown("<div class='rs-shell'>", unsafe_allow_html=True)
     st.markdown(f"<div class='rs-title'>Thread: {code}</div>", unsafe_allow_html=True)
-    st.markdown(
-        f"<p class='rs-sub'>Initiator: <b>{inv.get('initiator_name')}</b> • Partner: <b>{inv.get('partner_name')}</b></p>",
-        unsafe_allow_html=True,
-    )
 
     user_id = get_or_create_user_id()
     st.divider()
 
     st.markdown("<div class='rs-card'>", unsafe_allow_html=True)
     st.subheader("Consent checkpoint (dual consent required)")
-    st.write("RelateScore only processes reflections if both parties consent. Raw text is not shared by default.")
-
     current = inv.get("consents", {})
     you_consented = bool(current.get(user_id, False))
     consent = st.checkbox("I consent to participate in this thread", value=you_consented)
@@ -465,7 +474,7 @@ def view_consent(store: Dict[str, Any], code: str):
     if dual:
         st.success("Dual consent obtained. You may proceed to Reflection.")
     else:
-        st.warning("Waiting on dual consent. Invite the other party to join and consent.")
+        st.warning("Waiting on dual consent.")
 
     st.divider()
     st.subheader("Withdraw consent (clears data)")
@@ -489,54 +498,38 @@ def view_reflection(store: Dict[str, Any], code: str):
         return
 
     user_id = get_or_create_user_id()
-    consents = inv.get("consents", {})
-    dual = len([k for k, v in consents.items() if v]) >= 2
+    dual = len([k for k, v in inv.get("consents", {}).items() if v]) >= 2
     if not dual:
         st.warning("Dual consent is not yet obtained. Please complete Consent first.")
         return
 
     st.markdown("<div class='rs-shell'>", unsafe_allow_html=True)
     st.markdown("<div class='rs-title'>Reflection</div>", unsafe_allow_html=True)
-    st.markdown(
-        "<p class='rs-sub'>Guided prompts + quick self-rating. A toxicity gate blocks harmful language.</p>",
-        unsafe_allow_html=True,
-    )
-
     st.divider()
-    left, right = st.columns([0.62, 0.38], gap="large")
 
+    left, right = st.columns([0.62, 0.38], gap="large")
     with left:
         st.markdown("<div class='rs-card'>", unsafe_allow_html=True)
-        st.subheader("Inputs")
         effort = st.slider("Self-rating: effort & intent to improve (1–5)", 1, 5, 3)
 
         answers = []
         for i, p in enumerate(PROMPTS, start=1):
             answers.append(st.text_area(f"Prompt {i}", placeholder=p, height=110, key=f"ans_{i}"))
 
-        st.caption("Optional: attachment-style indicators (small scoring modifiers).")
         c1, c2, c3 = st.columns(3)
-        with c1:
-            anxious = st.checkbox("Anxious", value=False)
-        with c2:
-            avoidant = st.checkbox("Avoidant", value=False)
-        with c3:
-            secure = st.checkbox("Secure", value=False)
+        with c1: anxious = st.checkbox("Anxious", value=False)
+        with c2: avoidant = st.checkbox("Avoidant", value=False)
+        with c3: secure = st.checkbox("Secure", value=False)
 
         attachments = {"anxious": anxious, "avoidant": avoidant, "secure": secure}
 
         toxicity_ok, tox_score = enforce_toxicity_gate([*answers], threshold=0.55)
         if not toxicity_ok:
-            st.error(f"Input blocked by the toxicity gate (score {tox_score:.2f} > threshold). Please revise and resubmit.")
-            if st.button("Acknowledge & return to input"):
-                inv["toxicity_events"] = int(inv.get("toxicity_events", 0)) + 1
-                store["invites"][code] = inv
-                _save_store(store)
+            st.error(f"Input blocked by the toxicity gate (score {tox_score:.2f}). Please revise.")
         else:
             if st.button("Submit reflection", type="primary"):
                 cat_scores = score_categories(effort, answers, attachments)
                 rgi = rgi_from_categories(cat_scores, DEFAULT_WEIGHTS)
-
                 inv["reflections"].append({
                     "ts": _now_iso(),
                     "user_id": user_id,
@@ -549,21 +542,12 @@ def view_reflection(store: Dict[str, Any], code: str):
                 store["invites"][code] = inv
                 _save_store(store)
                 st.success("Reflection saved.")
-
         st.markdown("</div>", unsafe_allow_html=True)
 
     with right:
         st.markdown("<div class='rs-card'>", unsafe_allow_html=True)
-        st.subheader("Weights & time curve")
-        st.caption("Prototype weights: Communication 35%, Empathy 20%, Reliability 20%, Conflict 15%, Connection 10%.")
-        ema_alpha = st.slider(
-            "Time-weighting alpha (EMA)", 0.30, 0.80, 0.50, 0.05,
-            help="Higher = recent reflections influence more."
-        )
+        ema_alpha = st.slider("Time-weighting alpha (EMA)", 0.30, 0.80, 0.50, 0.05)
         st.session_state["ema_alpha"] = ema_alpha
-        st.divider()
-        st.subheader("Privacy defaults")
-        st.write("• Your raw text stays private in this prototype UI.\n• Dashboards show aggregates only.")
         st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown("</div>", unsafe_allow_html=True)
@@ -576,9 +560,7 @@ def view_dashboard(store: Dict[str, Any], code: str):
         st.error("This invite is not available.")
         return
 
-    user_id = get_or_create_user_id()
-    consents = inv.get("consents", {})
-    dual = len([k for k, v in consents.items() if v]) >= 2
+    dual = len([k for k, v in inv.get("consents", {}).items() if v]) >= 2
     if not dual:
         st.warning("Dual consent is not yet obtained. Please complete Consent first.")
         return
@@ -587,21 +569,8 @@ def view_dashboard(store: Dict[str, Any], code: str):
     refl = inv.get("reflections", [])
     dashboard = compute_dashboard(refl, ema_alpha)
 
-    # Mutual bonus: if both parties reflected in last 7 days
-    recent = sorted(refl, key=lambda r: r.get("ts", ""))[-10:]
-    week_ago = datetime.now(timezone.utc).timestamp() - 7 * 86400
-    users_recent = set()
-    for r in recent:
-        try:
-            ts = datetime.fromisoformat(r["ts"]).timestamp()
-        except Exception:
-            ts = 0
-        if ts >= week_ago:
-            users_recent.add(r.get("user_id"))
-    mutual_bonus = 1.10 if len(users_recent) >= 2 else 1.00
-
-    rgi_point = float(np.clip(dashboard["rgi_point"] * mutual_bonus, 0, 100))
-    rgi_trend = float(np.clip(dashboard["rgi_trend"] * mutual_bonus, 0, 100))
+    rgi_point = float(np.clip(dashboard["rgi_point"], 0, 100))
+    rgi_trend = float(np.clip(dashboard["rgi_trend"], 0, 100))
 
     st.markdown("<div class='rs-shell'>", unsafe_allow_html=True)
     st.markdown("<div class='rs-title'>Private Output</div>", unsafe_allow_html=True)
@@ -611,104 +580,29 @@ def view_dashboard(store: Dict[str, Any], code: str):
     hero_left, hero_right = st.columns([0.40, 0.60], gap="large", vertical_alignment="center")
 
     with hero_left:
-        # CRITICAL FIX: must be markdown + unsafe_allow_html=True
-        st.markdown(render_rgi_progress_ring(rgi_point), unsafe_allow_html=True)
+        # ✅ RELIABLE RENDER: components.html will not print HTML as text
+        components.html(ring_html(rgi_point), height=260)
 
     with hero_right:
         st.markdown("<div class='rs-card'>", unsafe_allow_html=True)
         st.subheader("What this means")
-        st.write(
-            "RGI is a private, time-weighted growth signal (0–100) based on structured reflection. "
-            "It is non-diagnostic and designed to support clarity without judgment or exposure."
-        )
-        m1, m2, m3 = st.columns(3)
+        st.write("RGI is a private, time-weighted growth signal (0–100) based on structured reflection.")
+        m1, m2 = st.columns(2)
         m1.metric("EMA trend", f"{rgi_trend:0.1f}")
         m2.metric("Reflections", f"{dashboard['n_reflections']}")
-        m3.metric("Mutual bonus", f"{mutual_bonus:0.2f}x")
         st.markdown("</div>", unsafe_allow_html=True)
 
     st.divider()
-    left, right = st.columns([0.62, 0.38], gap="large")
 
-    with left:
-        st.markdown("<div class='rs-card'>", unsafe_allow_html=True)
-        st.subheader("Category scorecard (0–100)")
-        df = pd.DataFrame({
-            "Category": CATEGORIES,
-            "Point": [dashboard["category_point"][c] for c in CATEGORIES],
-            "Trend": [dashboard["category_trend"][c] for c in CATEGORIES],
-            "Weight": [DEFAULT_WEIGHTS[c] for c in CATEGORIES],
-        })
-        st.dataframe(df, use_container_width=True, hide_index=True)
-        st.caption("Scores are indicative signals from text length + keyword heuristics + self-rated effort. Replace with calibrated model later.")
-        st.markdown("</div>", unsafe_allow_html=True)
-
-        st.markdown("<div class='rs-card' style='margin-top:14px;'>", unsafe_allow_html=True)
-        st.subheader("Growth hints (non-judgmental)")
-        lowest = df.sort_values("Point").head(2)["Category"].tolist()
-        tips = []
-        if "Communication" in lowest:
-            tips.append("Try a 10-minute weekly check-in: one appreciation, one request, one boundary.")
-        if "Empathy" in lowest:
-            tips.append("Use reflective listening: 'What I’m hearing is… Did I get that right?'")
-        if "Reliability" in lowest:
-            tips.append("Make one small promise only if you can keep it; track it in a shared note.")
-        if "Conflict Navigation" in lowest:
-            tips.append("Use a repair phrase: 'I want to get back on the same team—can we reset?'")
-        if "Connection" in lowest:
-            tips.append("Schedule one low-pressure connection ritual (walk, coffee, device-free dinner).")
-        for t in tips[:3]:
-            st.write(f"• {t}")
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    with right:
-        st.markdown("<div class='rs-card'>", unsafe_allow_html=True)
-        st.subheader("Red-flag dashboard")
-        tox_events = int(inv.get("toxicity_events", 0))
-        st.write(f"• Toxicity gate triggers: **{tox_events}**")
-
-        last = sorted(refl, key=lambda r: r.get("ts", ""))[-5:]
-        conflict_vals = [float(r.get("categories", {}).get("Conflict Navigation", 0.0)) for r in last]
-        empathy_vals = [float(r.get("categories", {}).get("Empathy", 0.0)) for r in last]
-        low_conflict_skill = sum(1 for v in conflict_vals if v < 35)
-        low_empathy = sum(1 for v in empathy_vals if v < 35)
-
-        st.write(f"• Low conflict-navigation signals (last 5): **{low_conflict_skill}**")
-        st.write(f"• Low empathy signals (last 5): **{low_empathy}**")
-
-        if tox_events >= 1 or low_conflict_skill >= 3:
-            st.warning("This thread shows elevated friction signals. Consider pausing and using calmer, specific language.")
-        else:
-            st.success("No elevated red-flag signals detected in the latest window (prototype heuristic).")
-
-        st.divider()
-        st.subheader("Consent control")
-        st.caption("Either party can withdraw and clear the thread at any time.")
-        if st.button("Withdraw and clear thread", type="secondary"):
-            inv["withdrawn"] = True
-            inv["reflections"] = []
-            store["invites"][code] = inv
-            _save_store(store)
-            st.success("Thread withdrawn and cleared.")
-            st.session_state.pop("active_code", None)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    st.divider()
     st.markdown("<div class='rs-card'>", unsafe_allow_html=True)
-    st.subheader("Your reflection history (private)")
-    st.caption("Shows only reflections created from this browser session (matched by your user_id).")
-
-    mine = [r for r in refl if r.get("user_id") == user_id]
-    if mine:
-        hist = pd.DataFrame([{
-            "Timestamp (UTC)": r.get("ts", ""),
-            "Effort": r.get("effort"),
-            "RGI": round(float(r.get("rgi", r.get("rsq", 0.0))), 1),
-            **{c: round(float(r.get("categories", {}).get(c, 0.0)), 1) for c in CATEGORIES}
-        } for r in sorted(mine, key=lambda r: r.get("ts", ""), reverse=True)])
-        st.dataframe(hist, use_container_width=True, hide_index=True)
-    else:
-        st.info("No reflections from this session yet.")
+    st.subheader("Category scorecard (0–100)")
+    df = pd.DataFrame({
+        "Category": CATEGORIES,
+        "Point": [dashboard["category_point"][c] for c in CATEGORIES],
+        "Trend": [dashboard["category_trend"][c] for c in CATEGORIES],
+        "Weight": [DEFAULT_WEIGHTS[c] for c in CATEGORIES],
+    })
+    st.dataframe(df, use_container_width=True, hide_index=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown("</div>", unsafe_allow_html=True)
@@ -724,7 +618,6 @@ def main():
     code = st.session_state.get("active_code") or st.session_state.get("code") or ""
 
     st.sidebar.title("RelateScore™")
-    st.sidebar.caption("Prototype navigation")
     page = st.sidebar.radio("Go to", ["Home", "Consent", "Reflection", "Dashboard"], index=0)
 
     if page == "Home":
@@ -737,7 +630,6 @@ def main():
         return
 
     st.sidebar.markdown(f"**Active code:** `{code}`")
-    st.sidebar.caption("Tip: invite your partner to join with the same code.")
 
     if page == "Consent":
         view_consent(store, code)
@@ -745,8 +637,6 @@ def main():
         view_reflection(store, code)
     elif page == "Dashboard":
         view_dashboard(store, code)
-    else:
-        view_home(store)
 
 
 if __name__ == "__main__":
