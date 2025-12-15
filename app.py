@@ -135,100 +135,6 @@ CATEGORIES = [
     "Stability & Consistency"
 ]
 
-# -----------------------------
-# RQ Wheel Color System (per category)
-# - Uses RelateScore palette where possible (Accent Blue / Mint / Gold)
-# - Adds distinct, premium-safe supporting colors for clear differentiation
-# -----------------------------
-CATEGORY_COLORS = {
-    "Emotional Awareness": "#2E6AF3",        # Accent Blue
-    "Communication Style": "#0C9A6F",        # Success Green
-    "Conflict Tendencies": "#E54646",        # Error Red
-    "Attachment Patterns": "#6B5B95",        # Deep Violet (supporting)
-    "Empathy & Responsiveness": "#A6E3DA",   # Mint
-    "Self-Insight": "#F4A623",               # Warning Amber
-    "Trust & Boundaries": "#C6A667",         # Gold
-    "Stability & Consistency": "#1A1A1A",    # Charcoal
-}
-
-def _hex_to_rgb01(hex_color: str):
-    hex_color = hex_color.lstrip("#")
-    return tuple(int(hex_color[i:i+2], 16) / 255.0 for i in (0, 2, 4))
-
-def _blend_hex(c1: str, c2: str, t: float) -> str:
-    """Blend c1->c2 with t in [0,1]. Returns hex string."""
-    t = float(np.clip(t, 0.0, 1.0))
-    r1, g1, b1 = _hex_to_rgb01(c1)
-    r2, g2, b2 = _hex_to_rgb01(c2)
-    r = r1 + (r2 - r1) * t
-    g = g1 + (g2 - g1) * t
-    b = b1 + (b2 - b1) * t
-    return "#{:02X}{:02X}{:02X}".format(int(r * 255), int(g * 255), int(b * 255))
-
-def _category_dynamic_color(category: str, score: float) -> str:
-    """Real-time color per category based on its score (0-100):
-    - Low scores bias toward a warm neutral (subtle)
-    - High scores move toward the category's base color
-    """
-    base = CATEGORY_COLORS.get(category, "#2E6AF3")
-    warm_neutral = "#FAFAF8"  # Warm Surface
-    # Map score to intensity; keep conservative so it stays premium
-    intensity = float(np.clip((score - 20.0) / 70.0, 0.0, 1.0))  # 20->0, 90->1
-    return _blend_hex(warm_neutral, base, intensity)
-
-def draw_rq_wheel(ax, categories, scores_dict):
-    """Draw an RQ Wheel with per-category colors + wedge fills."""
-    n = len(categories)
-    angles = np.linspace(0, 2 * np.pi, n, endpoint=False)
-    values = np.array([float(scores_dict[c]) for c in categories], dtype=float)
-
-    # Close the polygon
-    angles_loop = np.concatenate([angles, [angles[0]]])
-    values_loop = np.concatenate([values, [values[0]]])
-
-    # Background + grid styling
-    ax.set_facecolor("#FAFAF8")
-    ax.grid(True, linewidth=0.8, alpha=0.25)
-    ax.spines["polar"].set_alpha(0.25)
-    ax.set_ylim(0, 100)
-    ax.set_yticks([20, 40, 60, 80, 100])
-    ax.set_yticklabels([])
-
-    # Colored wedges per category (gives the "real-time" multi-color feel)
-    for i in range(n):
-        a0 = angles[i]
-        a1 = angles[(i + 1) % n]
-        v0 = values[i]
-        v1 = values[(i + 1) % n]
-
-        # Handle wrap-around for the last wedge
-        if i == n - 1:
-            a1 = angles[0] + 2 * np.pi
-
-        col = _category_dynamic_color(categories[i], v0)
-        ax.fill([a0, a0, a1, a1], [0, v0, v1, 0], color=col, alpha=0.22, linewidth=0)
-
-    # Outline polygon (neutral premium stroke)
-    ax.plot(angles_loop, values_loop, linewidth=2.2, alpha=0.9)
-
-    # Markers per axis in category color
-    for i, cat in enumerate(categories):
-        v = float(values[i])
-        mcol = _category_dynamic_color(cat, v)
-        ax.scatter([angles[i]], [v], s=60, c=[mcol], edgecolors="#1A1A1A", linewidths=0.6, zorder=5)
-
-    # Category labels, colored to match
-    ax.set_xticks(angles)
-    labels = []
-    for i, cat in enumerate(categories):
-        v = float(values[i])
-        labels.append(cat)
-        # Apply colored tick labels after set_xticklabels
-    ax.set_xticklabels(labels, fontsize=10)
-    for tick, cat in zip(ax.get_xticklabels(), categories):
-        tick.set_color(CATEGORY_COLORS.get(cat, "#1A1A1A"))
-        tick.set_fontweight("medium")
-
 LIKERT_QUESTIONS = {
     cat: [
         f"On a scale of 1–5, how important is {cat.lower()} to you in relationships?",
@@ -265,10 +171,6 @@ def init_state():
         "likert_responses": {},
         "assessment_responses": {},
         "scores": None,
-        "raw_scores": None,
-        "prev_scores": None,
-        "prev_scores_ts": None,
-        "score_history": [],
         "insights": None,
     }
     for k, v in defaults.items():
@@ -285,72 +187,11 @@ init_state()
 # -----------------------------
 # Helpers
 # -----------------------------
-# -----------------------------
-# Stability Smoothing (EMA + Dampening)
-# Notes:
-# - In this Streamlit prototype we store prior scores in session_state (per browser session).
-# - In production, persist these per-user in your backend so smoothing is consistent across devices/sessions.
-EMA_ALPHA = 0.25  # 0<alpha<=1; lower = smoother, higher = more responsive
-MAX_DAILY_CHANGE = 15.0  # max allowed change in score points per day (per category)
-MIN_CHANGE_FLOOR = 2.0   # minimum allowed change even if dt is very small (prevents "stuck" feeling)
-OUTLIER_SOFT_THRESHOLD = 25.0  # deltas above this get compressed ("dampened")
-
-def _now_ts() -> float:
-    return time.time()
-
-def _dt_days(prev_ts: float | None) -> float:
-    if not prev_ts:
-        return 1.0
-    dt = max(0.0, _now_ts() - float(prev_ts))
-    return max(dt / 86400.0, 1.0 / 1440.0)  # at least 1 minute
-
-def _dampen_delta(delta: float, threshold: float = OUTLIER_SOFT_THRESHOLD) -> float:
-    """Soft dampening: compress very large deltas without hard-clipping."""
-    ad = abs(delta)
-    if ad <= threshold:
-        return delta
-    # Beyond threshold, compress using a square-root curve (smooth, monotonic)
-    compressed = threshold + (ad - threshold) ** 0.5 * 5.0
-    return float(np.sign(delta) * compressed)
-
-def _cap_delta(delta: float, allowed: float) -> float:
-    if abs(delta) <= allowed:
-        return delta
-    return float(np.sign(delta) * allowed)
-
-def smooth_scores(new_scores: dict, prev_scores: dict | None, prev_ts: float | None) -> dict:
-    """Apply EMA smoothing + outlier dampening + max-delta cap to category scores (not including RGI)."""
-    if not prev_scores:
-        return new_scores
-
-    days = _dt_days(prev_ts)
-    allowed = max(MIN_CHANGE_FLOOR, MAX_DAILY_CHANGE * days)
-
-    smoothed = {}
-    for cat in CATEGORIES:
-        new_v = float(new_scores.get(cat, 0.0))
-        old_v = float(prev_scores.get(cat, new_v))
-
-        # 1) dampen outliers in the update step
-        raw_delta = new_v - old_v
-        damp_delta = _dampen_delta(raw_delta)
-
-        # 2) EMA on the dampened target
-        target = old_v + damp_delta
-        ema = old_v + EMA_ALPHA * (target - old_v)
-
-        # 3) cap maximum movement based on elapsed time
-        capped_delta = _cap_delta(ema - old_v, allowed)
-        smoothed[cat] = float(np.clip(old_v + capped_delta, 20, 90))
-
-    return smoothed
-
 def generate_invite_code(length: int = 8) -> str:
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
 
 def compute_scores():
-    # --- Step 1: Compute "raw" category scores from the current assessment session
-    raw_cat_scores = {}
+    cat_scores = {}
     for cat in CATEGORIES:
         likert_vals = [st.session_state.likert_responses[q] for q in LIKERT_QUESTIONS[cat]]
         assess_vals = [st.session_state.assessment_responses[q] for q in ASSESSMENT_QUESTIONS[cat]]
@@ -364,36 +205,12 @@ def compute_scores():
             mutual = float(np.random.uniform(40, 80))
             score = 0.4 * score + 0.6 * mutual
 
-        raw_cat_scores[cat] = float(np.clip(score, 20, 90))
+        cat_scores[cat] = float(np.clip(score, 20, 90))
 
-    st.session_state.raw_scores = dict(raw_cat_scores)
-
-    # --- Step 2: Apply stability smoothing (EMA + dampening)
-    prev_scores = st.session_state.get("prev_scores")
-    prev_ts = st.session_state.get("prev_scores_ts")
-    smoothed_cats = smooth_scores(raw_cat_scores, prev_scores, prev_ts)
-
-    # --- Step 3: Compute RGI from the (smoothed) category scores
     weights = np.array([0.15, 0.15, 0.15, 0.10, 0.15, 0.10, 0.10, 0.10], dtype=float)
-    rgi = float(np.sum(np.array([smoothed_cats[c] for c in CATEGORIES], dtype=float) * weights))
-
-    final_scores = dict(smoothed_cats)
-    final_scores["RGI"] = float(np.clip(rgi, 20, 90))
-
-    # --- Step 4: Persist the smoothed state for next computation (prototype: per session)
-    st.session_state.scores = final_scores
-    st.session_state.prev_scores = dict(smoothed_cats)
-    st.session_state.prev_scores_ts = _now_ts()
-
-    # Optional: keep a short history for debugging / future UI
-    hist = st.session_state.get("score_history", [])
-    hist.append({
-        "ts": st.session_state.prev_scores_ts,
-        "raw": dict(raw_cat_scores),
-        "smoothed": dict(smoothed_cats),
-        "rgi": final_scores["RGI"],
-    })
-    st.session_state.score_history = hist[-20:]
+    rgi = float(np.sum(np.array([cat_scores[c] for c in CATEGORIES], dtype=float) * weights))
+    cat_scores["RGI"] = rgi
+    st.session_state.scores = cat_scores
 
 def generate_insights():
     insights = []
@@ -468,6 +285,14 @@ def log_in_page():
     display_logo()
     st.header("Welcome back")
 
+    # Supporting microcopy (directly under title)
+    st.markdown(
+        "<div class='small-muted' style='margin-top:-6px;'>"
+        "<i>Your insights remain private and accessible only to you.</i>"
+        "</div>",
+        unsafe_allow_html=True
+    )
+
     c1, c2 = st.columns(2)
     with c1:
         if st.button("Back", key="login_back"):
@@ -476,6 +301,14 @@ def log_in_page():
         if st.button("Log In", key="login_go"):
             st.session_state.logged_in = True
             nav("home")
+
+    # Footer microcopy (small, muted, centered)
+    st.markdown(
+        "<div class='small-muted' style='text-align:center; margin-top:18px;'>"
+        "<i>You’re always in control of when and how you reflect.</i>"
+        "</div>",
+        unsafe_allow_html=True
+    )
 
 def home_page():
     """
@@ -661,29 +494,19 @@ def dashboard_page():
     st.markdown(f"<div class='rgi-big'>{st.session_state.scores['RGI']:.1f}</div>", unsafe_allow_html=True)
     st.caption("Relationship Growth Index")
 
-    # Debug/verification: show smoothing behavior (optional)
-    with st.expander("Stability smoothing (EMA) details", expanded=False):
-        st.write(f"EMA alpha: {EMA_ALPHA}")
-        st.write(f"Max daily change: {MAX_DAILY_CHANGE} points/day (min floor {MIN_CHANGE_FLOOR})")
-        if st.session_state.raw_scores:
-            st.caption("Raw vs smoothed category scores (prototype debug view)")
-            rows = []
-            for cat in CATEGORIES:
-                raw_v = float(st.session_state.raw_scores.get(cat, np.nan))
-                sm_v = float(st.session_state.scores.get(cat, np.nan))
-                rows.append({
-                    "Category": cat,
-                    "Raw": round(raw_v, 1),
-                    "Smoothed": round(sm_v, 1),
-                    "Delta": round(sm_v - raw_v, 1),
-                })
-            st.dataframe(rows, use_container_width=True)
-
-    # RQ Wheel (multi-color, real-time per category)
     scores = st.session_state.scores
-    fig, ax = plt.subplots(figsize=(6.3, 6.3), subplot_kw=dict(polar=True))
-    draw_rq_wheel(ax, CATEGORIES, scores)
-    st.pyplot(fig, use_container_width=True)
+    values = np.array([scores[cat] for cat in CATEGORIES], dtype=float)
+    angles = np.linspace(0, 2 * np.pi, len(CATEGORIES), endpoint=False).tolist()
+    values_loop = np.concatenate((values, [values[0]]))
+    angles_loop = angles + angles[:1]
+
+    fig, ax = plt.subplots(figsize=(6, 6), subplot_kw=dict(polar=True))
+    ax.fill(angles_loop, values_loop, alpha=0.25)
+    ax.plot(angles_loop, values_loop, linewidth=2)
+    ax.set_yticklabels([])
+    ax.set_xticks(angles)
+    ax.set_xticklabels(np.array(CATEGORIES), fontsize=10)
+    st.pyplot(fig)
 
     st.subheader("Key Insights")
     for insight in (st.session_state.insights or []):
