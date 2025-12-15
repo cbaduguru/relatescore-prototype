@@ -4,6 +4,7 @@ import numpy as np
 import random
 import string
 import time
+import hashlib
 
 # ------------------------------------------------------------
 # RelateScore™ Streamlit Prototype (Cloud-safe navigation)
@@ -120,6 +121,44 @@ def consume_invite(code: str) -> None:
     meta = store.get(code)
     if meta:
         meta["used"] = True
+
+# -----------------------------
+# User Store (shared across sessions)
+# Prototype-only credential store for Streamlit Cloud instance.
+# In production, replace with a real auth provider / DB with salted hashes.
+# -----------------------------
+@st.cache_resource
+def get_user_store():
+    # { username: {"pw_hash": str, "created_at": ts} }
+    return {}
+
+def _hash_pw(pw: str) -> str:
+    return hashlib.sha256(pw.encode("utf-8")).hexdigest()
+
+def register_user(username: str, password: str):
+    store = get_user_store()
+    u = (username or "").strip()
+    if not u:
+        return False, "missing"
+    if u in store:
+        return False, "exists"
+    store[u] = {"pw_hash": _hash_pw(password or ""), "created_at": time.time()}
+    return True, "ok"
+
+def verify_user(username: str, password: str):
+    store = get_user_store()
+    u = (username or "").strip()
+    meta = store.get(u)
+    if not meta:
+        return False
+    return meta.get("pw_hash") == _hash_pw(password or "")
+
+def is_invite_used(code: str) -> bool:
+    store = get_invite_store()
+    _clean_expired_invites(store)
+    meta = store.get(code)
+    return bool(meta and meta.get("used"))
+
 
 # -----------------------------
 # Data
@@ -255,6 +294,9 @@ def init_state():
         "page": "entry",
         "logged_in": False,
         "consent_accepted": False,
+        "username": "",
+        "invite_waiting": False,
+        "invite_accepted": False,
 
         # Invite flow (local convenience)
         "invite_code": None,  # last generated code in THIS session
@@ -438,16 +480,35 @@ def entry_page():
     display_logo()
     st.markdown('<div class="tagline">Private reflection. Shared only by choice.</div>', unsafe_allow_html=True)
 
+    # Credential entry (Figure 1 / Fix-1)
+    username_in = st.text_input("Username", value=st.session_state.get("username", ""), key="entry_username")
+    password_in = st.text_input("Password", type="password", value="", key="entry_password")
+
     if st.button("Create Profile", key="entry_create"):
         nav("create_profile")
 
-    if st.button("Log In", key="entry_login"):
-        nav("log_in")
+    # Log In button only active when both fields are present
+    can_login = bool(username_in.strip()) and bool(password_in)
+    if st.button("Log In", key="entry_login", disabled=not can_login):
+        # Do not persist password in session state or logs
+        if verify_user(username_in.strip(), password_in):
+            st.session_state.username = username_in.strip()
+            st.session_state.logged_in = True
+            nav("home")
+        else:
+            st.error("Login failed. Please check your credentials and try again.")
+
+
 
 def create_profile_page():
     display_logo()
     st.header("Create your private profile")
     st.write("Your responses are encrypted and visible only by choice.")
+
+    # Credentials (prototype)
+    new_username = st.text_input("Choose a username", value=st.session_state.get("username", ""), key="cp_username").strip()
+    new_password = st.text_input("Choose a password", type="password", value="", key="cp_password")
+    new_password2 = st.text_input("Confirm password", type="password", value="", key="cp_password2")
 
     st.session_state.consent_accepted = st.checkbox(
         "I understand that my reflections are private, encrypted, and can be deleted at any time.",
@@ -460,9 +521,26 @@ def create_profile_page():
         if st.button("Back", key="create_back"):
             nav("entry")
     with c2:
-        if st.button("Continue", key="create_continue", disabled=not st.session_state.consent_accepted):
+        disabled = (not st.session_state.consent_accepted) or (not new_username) or (not new_password) or (new_password != new_password2)
+        if st.button("Continue", key="create_continue", disabled=disabled):
+            if new_password != new_password2:
+                st.error("Passwords do not match.")
+                return
+            ok, reason = register_user(new_username, new_password)
+            if not ok:
+                if reason == "exists":
+                    st.error("That username is already in use. Please choose another.")
+                else:
+                    st.error("Please enter a valid username and password.")
+                return
+            st.session_state.username = new_username
             st.session_state.logged_in = True
             nav("home")
+
+    if new_password and new_password2 and (new_password != new_password2):
+        st.caption("Passwords must match to continue.")
+
+
 
 def log_in_page():
     display_logo()
@@ -501,6 +579,10 @@ def home_page():
       1) Create Invite
       2) Enter Invite Code (with tip microcopy underneath)
       3) Withdraw and Reset
+
+    Fix-1 addition:
+      - If THIS session generated an invite code and another authenticated session accepts it,
+        automatically transition this session to the Reflection start page (Figure 3).
     """
     display_logo()
     st.header("Home")
@@ -511,9 +593,26 @@ def home_page():
             nav("entry")
         return
 
+    # --- Auto-transition when invite is accepted in another session ---
+    if st.session_state.get("invite_code") and st.session_state.get("invite_waiting"):
+        if is_invite_used(st.session_state.invite_code):
+            st.session_state.invite_accepted = True
+            st.session_state.invite_waiting = False
+            # Clear the local invite code to prevent repeated redirects
+            st.session_state.invite_code = None
+            nav("reflection_start")
+            return
+        else:
+            st.info("Waiting for your partner to accept the invitation…")
+            # Lightweight polling for Streamlit Cloud prototype
+            time.sleep(2)
+            _rerun()
+
     if st.button("Create Invite", key="home_create_invite"):
         code = generate_invite_code()
         st.session_state.invite_code = code
+        st.session_state.invite_waiting = True
+        st.session_state.invite_accepted = False
         register_invite(code)
         nav("create_invite")
 
@@ -526,6 +625,8 @@ def home_page():
         nav("entry")
 
     home_footer_microcopy()
+
+
 
 
 def create_invite_page():
