@@ -122,6 +122,13 @@ def consume_invite(code: str) -> None:
     if meta:
         meta["used"] = True
 
+def is_invite_accepted(code: str) -> bool:
+    """Returns True if the invite exists and has been marked used/accepted."""
+    store = get_invite_store()
+    _clean_expired_invites(store)
+    meta = store.get(code)
+    return bool(meta and meta.get("used"))
+
 # -----------------------------
 # User Store (shared across sessions)
 # Prototype-only credential store for Streamlit Cloud instance.
@@ -587,6 +594,12 @@ def home_page():
     display_logo()
     st.header("Home")
 
+    # --- AUTO-TRANSITION (Home): if the last generated invite has been accepted, continue to Reflection
+    if st.session_state.get("invite_code") and is_invite_accepted(st.session_state.invite_code):
+        nav("reflection_start")
+        return
+
+
     if not st.session_state.logged_in:
         st.warning("Please log in or create a profile to continue.")
         if st.button("Return to Entry", key="home_return_entry"):
@@ -640,6 +653,23 @@ def create_invite_page():
 
     st.write("Share this invitation code privately with your partner:")
     st.code(st.session_state.invite_code)
+
+    # --- AUTO-TRANSITION: if partner accepts invite, move this originating session to Reflection automatically
+    if is_invite_accepted(st.session_state.invite_code):
+        nav("reflection_start")
+        return
+
+    # While waiting, show a non-intrusive “Checking…” spinner and re-run periodically
+    st.markdown(
+        "<div class='small-muted' style='margin-top:6px;'>Waiting for your partner to accept this code…</div>",
+        unsafe_allow_html=True
+    )
+    with st.spinner("Checking for acceptance…"):
+        time.sleep(1.5)
+    # Re-run so the originating session can detect the acceptance event
+    _rerun()
+
+
 
     st.markdown(
         f"<div class='small-muted'>This code expires in {INVITE_TTL_SECONDS//60} minutes and can be used once.</div>",
