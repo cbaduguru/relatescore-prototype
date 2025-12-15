@@ -135,6 +135,155 @@ CATEGORIES = [
     "Stability & Consistency"
 ]
 
+# -----------------------------
+# RQ Wheel Color Index (per-category)
+# -----------------------------
+CATEGORY_COLORS = {
+    "Emotional Awareness": "#4A90E2",      # Soft Navy Blue
+    "Communication Style": "#7ED321",      # Muted Green
+    "Conflict Tendencies": "#FF6B6B",      # Warm Red-Orange
+    "Attachment Patterns": "#A29BFE",      # Gentle Purple
+    "Empathy & Responsiveness": "#FFD700", # Sunny Yellow
+    "Self-Insight": "#5A67D8",             # Deep Indigo
+    "Trust & Boundaries": "#20C997",       # Earthy Teal
+    "Stability & Consistency": "#A1887F",  # Neutral Taupe
+}
+
+# Line-broken labels so text fits inside each sector
+CATEGORY_LABELS = {
+    "Emotional Awareness": "Emotional\nAwareness",
+    "Communication Style": "Communication\nStyle",
+    "Conflict Tendencies": "Conflict\nTendencies",
+    "Attachment Patterns": "Attachment\nPatterns",
+    "Empathy & Responsiveness": "Empathy &\nResponsiveness",
+    "Self-Insight": "Self-Insight",
+    "Trust & Boundaries": "Trust &\nBoundaries",
+    "Stability & Consistency": "Stability &\nConsistency",
+}
+
+def _hex_to_rgb01(h: str):
+    h = h.lstrip("#")
+    return tuple(int(h[i:i+2], 16)/255.0 for i in (0, 2, 4))
+
+def _mix_hex(hex_a: str, hex_b: str, t: float) -> str:
+    # Linear blend between two hex colors (t in [0,1])
+    a = np.array(_hex_to_rgb01(hex_a), dtype=float)
+    b = np.array(_hex_to_rgb01(hex_b), dtype=float)
+    c = (1 - t) * a + t * b
+    c = np.clip(c, 0, 1)
+    return "#{:02X}{:02X}{:02X}".format(int(c[0]*255), int(c[1]*255), int(c[2]*255))
+
+def draw_rq_wheel(scores: dict):
+    """
+    Ring-style RQ Wheel:
+      - Each category is a colored sector wedge
+      - Sector color intensity and fill length respond to the category score
+      - Colored point marker per category
+      - Colored label placed inside each sector
+      - Warm neutral background + gold grid/outline (UI kit aligned)
+    """
+    n = len(CATEGORIES)
+    angles = np.linspace(0, 2 * np.pi, n, endpoint=False)
+    width = 2 * np.pi / n
+
+    # UI-kit aligned neutrals
+    bg = "#FAF7F2"         # warm light beige
+    gold = "#C6A667"       # matte gold accent (button color in this prototype)
+    gold_grid = "#C9A96E"  # slightly warmer gold for grid lines
+
+    r_inner = 22.0
+    r_outer = 92.0
+    ring_h = r_outer - r_inner
+
+    fig, ax = plt.subplots(figsize=(6.4, 6.4), subplot_kw=dict(polar=True))
+    fig.patch.set_facecolor(bg)
+    ax.set_facecolor(bg)
+
+    ax.set_theta_offset(np.pi / 2)
+    ax.set_theta_direction(-1)
+
+    # Remove default labels; we place custom labels inside wedges
+    ax.set_xticks([])
+    ax.set_yticks([])
+
+    # Subtle radial guides
+    for r in [r_inner, r_inner + ring_h*0.25, r_inner + ring_h*0.5, r_inner + ring_h*0.75, r_outer]:
+        ax.plot(np.linspace(0, 2*np.pi, 361), np.full(361, r), color=gold_grid, lw=0.6, alpha=0.35, zorder=0)
+
+    # Draw sector wedges
+    for i, cat in enumerate(CATEGORIES):
+        theta = angles[i]
+        score = float(scores.get(cat, 0.0))
+        score01 = max(0.0, min(1.0, score / 100.0))
+
+        base_neutral = "#F5F5F5"
+        base_color = CATEGORY_COLORS.get(cat, "#2E6AF3")
+
+        # Neutral base ring for each wedge
+        ax.bar(
+            theta,
+            ring_h,
+            width=width * 0.98,
+            bottom=r_inner,
+            color=base_neutral,
+            edgecolor=gold_grid,
+            linewidth=0.8,
+            alpha=0.60,
+            align="edge",
+            zorder=1,
+        )
+
+        # Color overlay: length + intensity respond to score
+        fill_h = ring_h * score01
+        # Mix toward neutral at low scores; more saturated at high scores
+        color_mixed = _mix_hex("#F5F5F5", base_color, 0.35 + 0.65 * score01)
+        ax.bar(
+            theta,
+            fill_h,
+            width=width * 0.98,
+            bottom=r_inner,
+            color=color_mixed,
+            edgecolor="none",
+            alpha=0.25 + 0.55 * score01,
+            align="edge",
+            zorder=2,
+        )
+
+        # Point marker at score radius (colored)
+        ax.scatter(
+            [theta + width / 2],
+            [r_inner + fill_h],
+            s=40,
+            c=base_color,
+            edgecolors=gold,
+            linewidths=0.9,
+            zorder=5,
+        )
+
+        # Label inside wedge (colored, bold, fits inside)
+        label = CATEGORY_LABELS.get(cat, cat)
+        # Place label mid-wedge and mid-ring
+        ax.text(
+            theta + width / 2,
+            r_inner + ring_h * 0.52,
+            label,
+            ha="center",
+            va="center",
+            fontsize=9,
+            fontweight="bold",
+            color=base_color,
+            zorder=6,
+        )
+
+    # Outer ring outline (gold)
+    ax.plot(np.linspace(0, 2*np.pi, 361), np.full(361, r_outer), color=gold, lw=2.0, alpha=0.9, zorder=10)
+    ax.plot(np.linspace(0, 2*np.pi, 361), np.full(361, r_inner), color=gold, lw=1.4, alpha=0.65, zorder=10)
+
+    # Limit radius for clean framing
+    ax.set_rlim(0, 100)
+
+    return fig
+
 LIKERT_QUESTIONS = {
     cat: [
         f"On a scale of 1–5, how important is {cat.lower()} to you in relationships?",
@@ -285,14 +434,6 @@ def log_in_page():
     display_logo()
     st.header("Welcome back")
 
-    # Supporting microcopy (directly under title)
-    st.markdown(
-        "<div class='small-muted' style='margin-top:-6px;'>"
-        "<i>Your insights remain private and accessible only to you.</i>"
-        "</div>",
-        unsafe_allow_html=True
-    )
-
     c1, c2 = st.columns(2)
     with c1:
         if st.button("Back", key="login_back"):
@@ -301,14 +442,6 @@ def log_in_page():
         if st.button("Log In", key="login_go"):
             st.session_state.logged_in = True
             nav("home")
-
-    # Footer microcopy (small, muted, centered)
-    st.markdown(
-        "<div class='small-muted' style='text-align:center; margin-top:18px;'>"
-        "<i>You’re always in control of when and how you reflect.</i>"
-        "</div>",
-        unsafe_allow_html=True
-    )
 
 def home_page():
     """
@@ -494,18 +627,11 @@ def dashboard_page():
     st.markdown(f"<div class='rgi-big'>{st.session_state.scores['RGI']:.1f}</div>", unsafe_allow_html=True)
     st.caption("Relationship Growth Index")
 
+    
     scores = st.session_state.scores
-    values = np.array([scores[cat] for cat in CATEGORIES], dtype=float)
-    angles = np.linspace(0, 2 * np.pi, len(CATEGORIES), endpoint=False).tolist()
-    values_loop = np.concatenate((values, [values[0]]))
-    angles_loop = angles + angles[:1]
 
-    fig, ax = plt.subplots(figsize=(6, 6), subplot_kw=dict(polar=True))
-    ax.fill(angles_loop, values_loop, alpha=0.25)
-    ax.plot(angles_loop, values_loop, linewidth=2)
-    ax.set_yticklabels([])
-    ax.set_xticks(angles)
-    ax.set_xticklabels(np.array(CATEGORIES), fontsize=10)
+    # Render the upgraded RQ Wheel (ring style, per-category colors, score-responsive intensity)
+    fig = draw_rq_wheel(scores)
     st.pyplot(fig)
 
     st.subheader("Key Insights")
