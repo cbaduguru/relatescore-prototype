@@ -332,6 +332,7 @@ def init_state():
         "prev_scores_ts": None,
         "score_history": [],
         "insights": None,
+        "pause_waiting": False,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -607,6 +608,22 @@ def home_page():
     display_logo()
     st.header("Home")
 
+    # If you have an active invite code, allow returning to the waiting screen without regenerating
+    if st.session_state.get("invite_code"):
+        store = get_invite_store()
+        _clean_expired_invites(store)
+        meta = store.get(st.session_state.invite_code)
+        if meta and (not meta.get("revoked")) and (not meta.get("used")):
+            remaining = max(0, int(INVITE_TTL_SECONDS - (time.time() - float(meta.get("created_at", time.time())))))
+            if remaining > 0:
+                mins = remaining // 60
+                secs = remaining % 60
+                st.info(f"Invite code still active (expires in {mins:d}:{secs:02d}). You can return to the waiting screen anytime.")
+                if st.button("View Invite", key="home_view_invite"):
+                    nav("create_invite")
+                    return
+
+
     # --- AUTO-TRANSITION (Home): if the last generated invite has been accepted, continue to Reflection
     if st.session_state.get("invite_code") and is_invite_accepted(st.session_state.invite_code):
         nav("reflection_start")
@@ -658,6 +675,7 @@ def home_page():
 def create_invite_page():
     display_logo()
     st.header("Create Invite")
+    st.session_state.pause_waiting = False
 
     if not st.session_state.invite_code:
         code = generate_invite_code()
@@ -716,19 +734,25 @@ def create_invite_page():
     cA, cB, cC = st.columns(3)
     with cA:
         if st.button("Return to Home", key="wait_home"):
+            st.session_state.pause_waiting = True
             nav("home")
             return
     with cB:
         if st.button("Generate New Code", key="wait_regen"):
             # Revoke old code and issue a new one
+            st.session_state.pause_waiting = False
             revoke_invite(st.session_state.invite_code)
             new_code = generate_invite_code()
             st.session_state.invite_code = new_code
             register_invite(new_code)
-            _rerun()
+            st.info("New code generated.")
+            return
     with cC:
         if st.button("Cancel Invite", key="wait_cancel"):
             revoke_invite(st.session_state.invite_code)
+            st.session_state.invite_code = None
+            st.session_state.partner_code = ""
+            st.session_state.pause_waiting = True
             nav("home")
             return
 
@@ -739,6 +763,10 @@ def create_invite_page():
 
     # If expired, stop polling (user can regenerate)
     if remaining <= 0 or meta.get("revoked"):
+        return
+
+    # If user chose to pause waiting (e.g., returned home), stop polling
+    if st.session_state.get("pause_waiting"):
         return
 
     # Spinner + periodic re-run (configurable cadence)
